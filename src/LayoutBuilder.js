@@ -32,6 +32,7 @@ class LayoutBuilder {
 		this.pageMargins = pageMargins;
 		this.svgMeasure = svgMeasure;
 		this.tableLayouts = {};
+		this.nestedLevel = 0;
 	}
 
 	registerTableLayouts(tableLayouts) {
@@ -369,16 +370,50 @@ class LayoutBuilder {
 				}
 			}
 
-			if (margin) {
-				this.writer.context().moveDown(margin[1]);
+			const isDetachedBlock = node.relativePosition || node.absolutePosition;
+
+			// Detached nodes have no margins, their position is only determined by 'x' and 'y'
+			if (margin && !isDetachedBlock) {
+				const availableHeight = this.writer.context().availableHeight;
+				// If top margin is bigger than available space, move to next page
+				// Necessary for nodes inside tables
+				if (availableHeight - margin[1] < 0) {
+					// Consume the whole available space
+					this.writer.context().moveDown(availableHeight);
+					this.writer.moveToNextPage(node.pageOrientation);
+					/**
+					 * TODO - Something to consider:
+					 * Right now the node starts at the top of next page (after header)
+					 * Another option would be to apply just the top margin that has not been consumed in the page before
+					 * It would something like: this.write.context().moveDown(margin[1] - availableHeight)
+					 */
+				} else {
+					this.writer.context().moveDown(margin[1]);
+				}
+				// Apply lateral margins
 				this.writer.context().addMargin(margin[0], margin[2]);
 			}
-
 			callback();
 
-			if (margin) {
+			// Detached nodes have no margins, their position is only determined by 'x' and 'y'
+			if (margin && !isDetachedBlock) {
+				const availableHeight = this.writer.context().availableHeight;
+				// If bottom margin is bigger than available space, move to next page
+				// Necessary for nodes inside tables
+				if (availableHeight - margin[3] < 0) {
+					this.writer.context().moveDown(availableHeight);
+					this.writer.moveToNextPage(node.pageOrientation);
+					/**
+					 * TODO - Something to consider:
+					 * Right now next node starts at the top of next page (after header)
+					 * Another option would be to apply the bottom margin that has not been consumed in the next page?
+					 * It would something like: this.write.context().moveDown(margin[3] - availableHeight)
+					 */
+				} else {
+					this.writer.context().moveDown(margin[3]);
+				}
+				// Apply lateral margins
 				this.writer.context().addMargin(-margin[0], -margin[2]);
-				this.writer.context().moveDown(margin[3]);
 			}
 
 			if (node.pageBreak === 'after') {
@@ -467,6 +502,7 @@ class LayoutBuilder {
 
 	// columns
 	processColumns(columnNode) {
+		this.nestedLevel++;
 		let columns = columnNode.columns;
 		let availableWidth = this.writer.context().availableWidth;
 		let gaps = gapArray(columnNode._gap);
@@ -476,9 +512,17 @@ class LayoutBuilder {
 		}
 
 		ColumnCalculator.buildColumnWidths(columns, availableWidth);
-		let result = this.processRow(columns, columns, gaps);
+		let result = this.processRow({
+			marginX: columnNode._margin ? [columnNode._margin[0], columnNode._margin[2]] : [0, 0],
+			cells: columns,
+			widths: columns,
+			gaps
+		});
 		addAll(columnNode.positions, result.positions);
-
+		this.nestedLevel--;
+		if (this.nestedLevel === 0) {
+			this.writer.context().resetMarginXTopParent();
+		}
 		function gapArray(gap) {
 			if (!gap) {
 				return null;
@@ -497,20 +541,36 @@ class LayoutBuilder {
 
 	findStartingSpanCell(arr, i) {
 		let requiredColspan = 1;
-    for (let index = i - 1; index >= 0; index--) {
-        if (!arr[index]._span) {
-					if (arr[index].rowSpan > 1 && (arr[index].colSpan || 1) === requiredColspan) {
-            return arr[index];
-					} else {
-						return null;
-					}
-        }
-				requiredColspan++;
-    }
-    return null;
+		for (let index = i - 1; index >= 0; index--) {
+			if (!arr[index]._span) {
+				if (arr[index].rowSpan > 1 && (arr[index].colSpan || 1) === requiredColspan) {
+					return arr[index];
+				} else {
+					return null;
+				}
+			}
+			requiredColspan++;
+		}
+		return null;
 	}
 
-	processRow(columns, widths, gaps, tableBody, tableRow, height) {
+	processRow({ marginX = [0, 0], dontBreakRows = false, rowsWithoutPageBreak = 0, cells, widths, gaps, tableBody, rowIndex, height }) {
+		const updatePageBreakData = (page, prevY) => {
+			let pageDesc;
+			// Find page break data for this row and page
+			for (let i = 0, l = pageBreaks.length; i < l; i++) {
+				let desc = pageBreaks[i];
+				if (desc.prevPage === page) {
+					pageDesc = desc;
+					break;
+				}
+			}
+			// If row has page break in this page, update prevY
+			if (pageDesc) {
+				pageDesc.prevY = Math.max(pageDesc.prevY, prevY);
+			}
+		};
+
 		const storePageBreakData = data => {
 			let pageDesc;
 
@@ -530,17 +590,25 @@ class LayoutBuilder {
 			pageDesc.y = Math.min(pageDesc.y, data.y);
 		};
 
+		const isUnbreakableRow = dontBreakRows || rowIndex <= rowsWithoutPageBreak - 1;
 		let pageBreaks = [];
 		let positions = [];
-
+		let willBreakByHeight = false;
 		this.writer.addListener('pageChanged', storePageBreakData);
 
-		widths = widths || columns;
+		// Check if row should break by height
+		if (!isUnbreakableRow && height > this.writer.context().availableHeight) {
+			willBreakByHeight = true;
+		}
 
-		this.writer.context().beginColumnGroup();
+		widths = widths || cells;
+		// Use the marginX if we are in a top level table/column (not nested)
+		const marginXParent = this.nestedLevel === 1 ? marginX : null;
 
-		for (let i = 0, l = columns.length; i < l; i++) {
-			let column = columns[i];
+		this.writer.context().beginColumnGroup(marginXParent);
+
+		for (let i = 0, l = cells.length; i < l; i++) {
+			let column = cells[i];
 			let width = widths[i]._calcWidth;
 			let leftOffset = colLeftOffset(i);
 
@@ -555,48 +623,80 @@ class LayoutBuilder {
 			if (endingCell) {
 				// We store a reference of the ending cell in the first cell of the rowspan
 				column._endingCell = endingCell;
+				column._endingCell._startingRowSpanY = column._startingRowSpanY;
 			}
 
 			// Check if exists and retrieve the cell that started the rowspan in case we are in the cell just after
-			let startingSpanCell = this.findStartingSpanCell(columns, i);
+			let startingSpanCell = this.findStartingSpanCell(cells, i);
 			let endingSpanCell = null;
 			if (startingSpanCell && startingSpanCell._endingCell) {
 				// Reference to the last cell of the rowspan
 				endingSpanCell = startingSpanCell._endingCell;
+				// Store if we are in an unbreakable block when we save the context and the originalX
+				if (this.writer.transactionLevel > 0) {
+					endingSpanCell._isUnbreakableContext = true;
+					endingSpanCell._originalXOffset = this.writer.originalX;
+				}
 			}
 
 			// We pass the endingSpanCell reference to store the context just after processing rowspan cell
 			this.writer.context().beginColumn(width, leftOffset, endingSpanCell);
+
 			if (!column._span) {
 				this.processNode(column);
 				addAll(positions, column.positions);
 			} else if (column._columnEndingContext) {
+				let discountY = 0;
+				if (dontBreakRows) {
+					// Calculate how many points we have to discount to Y when dontBreakRows and rowSpan are combined
+					const ctxBeforeRowSpanLastRow = this.writer.contextStack[this.writer.contextStack.length - 1];
+					discountY = ctxBeforeRowSpanLastRow.y - column._startingRowSpanY;
+				}
+				let originalXOffset = 0;
+				// If context was saved from an unbreakable block and we are not in an unbreakable block anymore
+				// We have to sum the originalX (X before starting unbreakable block) to X
+				if (column._isUnbreakableContext && !this.writer.transactionLevel) {
+					originalXOffset = column._originalXOffset;
+				}
 				// row-span ending
 				// Recover the context after processing the rowspanned cell
-				this.writer.context().markEnding(column);
+				this.writer.context().markEnding(column, originalXOffset, discountY);
 			}
 		}
 
 		// Check if last cell is part of a span
 		let endingSpanCell = null;
-		const lastColumn = columns.length > 0 ? columns[columns.length - 1] : null;
+		const lastColumn = cells.length > 0 ? cells[cells.length - 1] : null;
 		if (lastColumn) {
 			// Previous column cell has a rowspan
 			if (lastColumn._endingCell) {
 				endingSpanCell = lastColumn._endingCell;
-			// Previous column cell is part of a span
+				// Previous column cell is part of a span
 			} else if (lastColumn._span === true) {
 				// We get the cell that started the span where we set a reference to the ending cell
-				const startingSpanCell = this.findStartingSpanCell(columns, columns.length);
+				const startingSpanCell = this.findStartingSpanCell(cells, cells.length);
 				if (startingSpanCell) {
 					// Context will be stored here (ending cell)
 					endingSpanCell = startingSpanCell._endingCell;
+					// Store if we are in an unbreakable block when we save the context and the originalX
+					if (this.writer.transactionLevel > 0) {
+						endingSpanCell._isUnbreakableContext = true;
+						endingSpanCell._originalXOffset = this.writer.originalX;
+					}
 				}
 			}
 		}
 
-		this.writer.context().completeColumnGroup(height, endingSpanCell);
+		// If there are page breaks in this row, update data with prevY of last cell
+		updatePageBreakData(this.writer.context().page, this.writer.context().y);
 
+		// If content did not break page, check if we should break by height
+		if (!isUnbreakableRow && pageBreaks.length === 0 && willBreakByHeight) {
+			this.writer.context().moveDown(this.writer.context().availableHeight);
+			this.writer.moveToNextPage();
+		}
+
+		this.writer.context().completeColumnGroup(height, endingSpanCell);
 		this.writer.removeListener('pageChanged', storePageBreakData);
 
 		return { pageBreaks: pageBreaks, positions: positions };
@@ -610,7 +710,7 @@ class LayoutBuilder {
 
 		function getEndingCell(column, columnIndex) {
 			if (column.rowSpan && column.rowSpan > 1) {
-				let endingRow = tableRow + column.rowSpan - 1;
+				let endingRow = rowIndex + column.rowSpan - 1;
 				if (endingRow >= tableBody.length) {
 					throw new Error(`Row span for column ${columnIndex} (with indexes starting from 0) exceeded row count`);
 				}
@@ -667,12 +767,23 @@ class LayoutBuilder {
 
 	// tables
 	processTable(tableNode) {
+		this.nestedLevel++;
 		let processor = new TableProcessor(tableNode);
 
 		processor.beginTable(this.writer);
 
 		let rowHeights = tableNode.table.heights;
 		for (let i = 0, l = tableNode.table.body.length; i < l; i++) {
+			// if dontBreakRows and row starts a rowspan
+			// we store the 'y' of the beginning of each rowSpan
+			if (processor.dontBreakRows) {
+				tableNode.table.body[i].forEach(cell => {
+					if (cell.rowSpan && cell.rowSpan > 1) {
+						cell._startingRowSpanY = this.writer.context().y;
+					}
+				});
+			}
+
 			processor.beginRow(i, this.writer);
 
 			let height;
@@ -688,13 +799,28 @@ class LayoutBuilder {
 				height = undefined;
 			}
 
-			let result = this.processRow(tableNode.table.body[i], tableNode.table.widths, tableNode._offsets.offsets, tableNode.table.body, i, height);
+			let result = this.processRow({
+				marginX: tableNode._margin ? [tableNode._margin[0], tableNode._margin[2]] : [0, 0],
+				dontBreakRows: processor.dontBreakRows,
+				rowsWithoutPageBreak: processor.rowsWithoutPageBreak,
+				cells: tableNode.table.body[i],
+				widths: tableNode.table.widths,
+				gaps: tableNode._offsets.offsets,
+				tableBody: tableNode.table.body,
+				rowIndex: i,
+				height
+			});
+
 			addAll(tableNode.positions, result.positions);
 
 			processor.endRow(i, this.writer, result.pageBreaks);
 		}
 
 		processor.endTable(this.writer);
+		this.nestedLevel--;
+		if (this.nestedLevel === 0) {
+			this.writer.context().resetMarginXTopParent();
+		}
 	}
 
 	// leafs (texts)

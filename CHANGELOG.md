@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0-beta.11 - 2024-10-09
+
+- Fixed drawing top horizontal line of the table with page break
+
+## 0.3.0-beta.10 - 2024-09-22
+
+- Drop support Internet Explorer 11 (Microsoft will not support from 2022)
+- Minimal supported version Node.js 18 LTS
+- Update Roboto font (version 3.010)
+- Fixed page break in a column group
+- Fixed saving margins in an unbreakable block
+- Fixed fillColor items in unbreakable blocks
+- Fixed calculating correctly the 'y' at the end of a rowSpan with dontBreakRows
+- Fixed margins (top/bottom) of nodes and row height are considered for breaking page
+- Fixed margins after page break
+- Fixed margins of nodes with relativePosition or absolutePosition are ignored and don't interfere with the regular flow of the layout
+
 ## 0.3.0-beta.9 - 2024-08-09
 
 - Fixed and validates input values headerRows and keepWithHeaderRows
