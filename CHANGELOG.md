@@ -11,6 +11,7 @@
 		return path.startsWith("fonts/");
 	});
 	```
+- Improved URL Access Policy (`setUrlAccessPolicy` method); URLs are now validated even after redirection
 - Fixed extra blank page when using headerRows, dontBreakRows and cell pageBreak together
 - Fixed rendering of an invalid color name - previously it used the last valid color; now it defaults to black
 - Fixed dontBreakRows rowSpan ending offset across pages
