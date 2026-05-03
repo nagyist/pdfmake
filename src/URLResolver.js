@@ -1,14 +1,48 @@
-async function fetchUrl(url, headers = {}) {
-	try {
-		const response = await fetch(url, { headers });
-		if (!response.ok) {
-			throw new Error(`Failed to fetch (status code: ${response.status}, url: "${url}")`);
+
+const MAX_REDIRECTS = 30;
+
+/**
+ * @param {string} url
+ * @param {object} headers
+ * @param {(url: string) => boolean} urlAccessPolicy
+ * @returns {Promise<Response>}
+ */
+async function fetchUrl(url, headers = {}, urlAccessPolicy) {
+	for (let i = 0; i <= MAX_REDIRECTS; i++) {
+		if ((typeof urlAccessPolicy !== 'undefined') && (urlAccessPolicy(url) !== true)) {
+			throw new Error(`Access to URL denied by resource access policy: ${url}`);
 		}
 
-		return response;
-	} catch (error) {
-		throw new Error(`Network request failed (url: "${url}", error: ${error.message})`, { cause: error });
+		try {
+			let response = await fetch(url, { headers, redirect: 'manual' });
+
+			// redirect url
+			if (response.status >= 300 && response.status < 400) {
+				let location = response.headers.get('location');
+				if (!location) {
+					throw new Error('Redirect response missing Location header');
+				}
+				url = new URL(location, url).href;
+				continue;
+			}
+
+			// browsers do not support redirect: 'manual'
+			if (response.type === 'opaqueredirect') {
+				response = await fetch(url, {headers});
+			}
+
+			if (!response.ok) {
+				throw new Error(`Failed to fetch (status code: ${response.status})`);
+			}
+
+			return response;
+
+		} catch (error) {
+			throw new Error(`Network request failed (url: "${url}", error: ${error.message})`, {cause: error});
+		}
 	}
+
+	throw new Error(`Network request failed (url: "${url}", error: Too many redirects)`);
 }
 
 class URLResolver {
@@ -32,13 +66,10 @@ class URLResolver {
 					return; // url was downloaded earlier
 				}
 
-				if ((typeof this.urlAccessPolicy !== 'undefined') && (this.urlAccessPolicy(url) !== true)) {
-					throw new Error(`Access to URL denied by resource access policy: ${url}`);
-				}
+				const response = await fetchUrl(url, headers, this.urlAccessPolicy);
 
-				const response = await fetchUrl(url, headers);
-
-				if (response.redirected) { // validate access policy on redirected url
+				// validate access policy on redirected url (in browsers, only the final URL is validated)
+				if (response.redirected) {
 					if ((typeof this.urlAccessPolicy !== 'undefined') && (this.urlAccessPolicy(response.url) !== true)) {
 						throw new Error(`Access to URL denied by resource access policy: ${response.url}`);
 					}

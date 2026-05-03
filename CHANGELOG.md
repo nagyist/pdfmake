@@ -11,7 +11,7 @@
 		return path.startsWith("fonts/");
 	});
 	```
-- Improved URL Access Policy (`setUrlAccessPolicy` method); URLs are now validated even after redirection
+- Improved URL Access Policy (`setUrlAccessPolicy` method); URLs are now validated even before each redirection in Node.js and after final redirection in browser (browsers do not support validation before redirection)
 - Fixed extra blank page when using headerRows, dontBreakRows and cell pageBreak together
 - Fixed rendering of an invalid color name - previously it used the last valid color; now it defaults to black
 - Fixed dontBreakRows rowSpan ending offset across pages
