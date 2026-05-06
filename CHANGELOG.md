@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.8 - 2026-05-06
 
 - Added server-side method `setLocalAccessPolicy()` for defining a custom access policy for local file
 
